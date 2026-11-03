@@ -43,6 +43,7 @@ jobs:
           echo "push exit=$?"
           echo "=== end ==="
           } 2>&1 | tee "$LOG"
+          echo "```"; cat "$LOG"; echo "```" >> "$GITHUB_STEP_SUMMARY"
           echo "--- report to issue ---"
           if curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues/1" | grep -q '"number"'; then
             curl -s -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
