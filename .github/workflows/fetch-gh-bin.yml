@@ -11,22 +11,32 @@ jobs:
       - name: Download latest gh (linux amd64)
         id: dl
         run: |
-          set -euo pipefail
-          tag="$(curl -sf https://api.github.com/repos/cli/gh/releases/latest | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-          [ -n "$tag" ] || { echo "no tag found"; exit 1; }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          ver="${tag#v}"
-          curl -sfL -o "$RUNNER_TEMP/gh.tar.gz" "https://github.com/cli/gh/releases/download/${tag}/gh_${ver}_linux_amd64.tar.gz"
-          ls -l "$RUNNER_TEMP/gh.tar.gz"
-      - name: Push binary to tools/gh-bin
+          set -uo pipefail
+          curl -s https://api.github.com/repos/cli/gh/releases/latest -o /tmp/release.json
+          echo "=== release json head ==="; head -c 400 /tmp/release.json; echo
+          tag=$(python3 -c "import json;print(json.load(open('/tmp/release.json'))['tag_name'])" 2>&1 || true)
+          echo "TAG_LINE=$tag"
+          if [ -n "$tag" ]; then echo "tag=$tag" >> "$GITHUB_OUTPUT"; fi
+          url=$(python3 -c "import json; r=json.load(open('/tmp/release.json')); urls=[a['browser_download_url'] for a in r['assets']]; print(next((u for u in urls if u.endswith('_linux_amd64.tar.gz')), next((u for u in urls if u.endswith('_linux_amd64.deb')), '')))" 2>&1 || true)
+          echo "URL_LINE=$url"
+          if [ -n "$url" ]; then
+            echo "url=$url" >> "$GITHUB_ENV"
+            code=$(curl -sL -o "$RUNNER_TEMP/gh.tar.gz" -w '%{http_code}' "$url")
+            echo "download http=$code"; ls -l "$RUNNER_TEMP/gh.tar.gz" || true
+          else
+            echo "NO_LINUX_AMD64_ASSET"; python3 -c "import json; print([a['name'] for a in json.load(open('/tmp/release.json'))['assets']])" 2>&1 | head -5 || true
+          fi
+      - name: Push artifacts to tools/gh-bin
+        if: always()
         run: |
-          set -euo pipefail
+          set -uo pipefail
           git checkout --orphan tools/gh-bin
           git rm -rf --cached . >/dev/null 2>&1 || true
-          find . -maxdepth 1 -not -name '.git' -not -name 'gh.tar.gz' -exec rm -rf {} +
-          cp "$RUNNER_TEMP/gh.tar.gz" ./gh.tar.gz
-          git add gh.tar.gz
-          git -c user.name="github-actions" -c user.email="actions@github.com" commit -m "gh ${TAG} linux amd64"
+          find . -maxdepth 1 -not -name '.git' -exec rm -rf {} +
+          cp "$RUNNER_TEMP/gh.tar.gz" ./gh.tar.gz 2>/dev/null || echo "no tarball" > ./gh.tar.gz
+          { echo "TAG=${TAG:-}"; echo "URL=${URL:-}"; } > ./diag.txt
+          git add gh.tar.gz diag.txt
+          git -c user.name="github-actions" -c user.email="actions@github.com" commit -m "gh fetch attempt"
           git push origin tools/gh-bin --force
         env:
           TAG: ${{ steps.dl.outputs.tag }}
