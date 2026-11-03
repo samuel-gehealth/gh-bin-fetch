@@ -6,7 +6,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: stage1-release-api
-        run: curl -sf -H "Accept: application/vnd.github+json" https://api.github.com/repos/cli/gh/releases/latest -o /tmp/r.json && python3 -c "import json;print(json.load(open('/tmp/r.json'))['tag_name'])"
+        run: |
+          curl -sf -H "Accept: application/vnd.github+json" https://api.github.com/repos/cli/gh/releases/latest -o /tmp/r.json
+          python3 -c "import json;print(json.load(open('/tmp/r.json'))['tag_name'])"
       - name: stage2-download
         run: |
           tag=$(python3 -c "import json;print(json.load(open('/tmp/r.json'))['tag_name'])")
