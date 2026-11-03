@@ -6,37 +6,52 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Download latest gh (linux amd64)
-        id: dl
+      - name: Download, push, and report
         run: |
           set -uo pipefail
+          LOG=/tmp/fetch.log
+          {
+          echo "=== start $(date -u) ==="
+          git --version
+          git init -q /tmp/work && cd /tmp/work
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/samuel-gehealth/gh-bin-fetch.git"
+          git config user.name actions
+          git config user.email actions@github.com
+          echo "--- release info ---"
           curl -s https://api.github.com/repos/cli/gh/releases/latest -o /tmp/release.json
-          echo "=== release json head ==="; head -c 400 /tmp/release.json; echo
+          head -c 400 /tmp/release.json; echo
           tag=$(python3 -c "import json;print(json.load(open('/tmp/release.json'))['tag_name'])" 2>&1 || true)
-          echo "TAG_LINE=$tag"
-          if [ -n "$tag" ]; then echo "tag=$tag" >> "$GITHUB_OUTPUT"; fi
-          url=$(python3 -c "import json; r=json.load(open('/tmp/release.json')); urls=[a['browser_download_url'] for a in r['assets']]; print(next((u for u in urls if u.endswith('_linux_amd64.tar.gz')), next((u for u in urls if u.endswith('_linux_amd64.deb')), '')))" 2>&1 || true)
-          echo "URL_LINE=$url"
-          if [ -n "$url" ]; then
-            echo "url=$url" >> "$GITHUB_ENV"
-            code=$(curl -sL -o "$RUNNER_TEMP/gh.tar.gz" -w '%{http_code}' "$url")
-            echo "download http=$code"; ls -l "$RUNNER_TEMP/gh.tar.gz" || true
-          else
-            echo "NO_LINUX_AMD64_ASSET"; python3 -c "import json; print([a['name'] for a in json.load(open('/tmp/release.json'))['assets']])" 2>&1 | head -5 || true
-          fi
-      - name: Push artifacts to tools/gh-bin
-        if: always()
-        run: |
-          set -uo pipefail
-          git checkout --orphan tools/gh-bin
-          git rm -rf --cached . >/dev/null 2>&1 || true
-          find . -maxdepth 1 -not -name '.git' -exec rm -rf {} +
-          cp "$RUNNER_TEMP/gh.tar.gz" ./gh.tar.gz 2>/dev/null || echo "no tarball" > ./gh.tar.gz
-          { echo "TAG=${TAG:-}"; echo "URL=${URL:-}"; } > ./diag.txt
+          echo "tag=$tag"
+          ver=${tag#v}
+          url="https://github.com/cli/gh/releases/download/${tag}/gh_${ver}_linux_amd64.tar.gz"
+          echo "url=$url"
+          echo "--- download ---"
+          curl -sL -o /tmp/gh.tar.gz -w 'http=%{http_code}\n' "$url"
+          ls -l /tmp/gh.tar.gz
+          file /tmp/gh.tar.gz 2>/dev/null || true
+          echo "--- push to tools/gh-bin ---"
+          git checkout -q --orphan tools/gh-bin
+          cp /tmp/gh.tar.gz /tmp/work/gh.tar.gz
+          { echo "tag=$tag"; echo "url=$url"; } > /tmp/work/diag.txt
           git add gh.tar.gz diag.txt
-          git -c user.name="github-actions" -c user.email="actions@github.com" commit -m "gh fetch attempt"
-          git push origin tools/gh-bin --force
-        env:
-          TAG: ${{ steps.dl.outputs.tag }}
+          git commit -q -m "gh $tag"
+          git push origin tools/gh-bin --force 2>&1
+          echo "push exit=$?"
+          echo "=== end ==="
+          } 2>&1 | tee "$LOG"
+          echo "--- report to issue ---"
+          if curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues/1" | grep -q '"number"'; then
+            curl -s -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues/1" \
+              -d "$(python3 -c "import json;print(json.dumps({'body':open('/tmp/fetch.log').read()}))")" > /dev/null
+            echo "issue updated"
+          else
+            curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues" \
+              -d "$(python3 -c "import json;print(json.dumps({'title':'fetch-gh-bin diagnostics','body':open('/tmp/fetch.log').read()}))")" > /dev/null
+            echo "issue created"
+          fi
