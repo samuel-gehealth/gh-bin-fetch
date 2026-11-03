@@ -7,52 +7,36 @@ jobs:
     permissions:
       contents: write
       issues: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Download, push, and report
+      - name: fetch and upload
         run: |
           set -uo pipefail
-          LOG=/tmp/fetch.log
-          {
-          echo "=== start $(date -u) ==="
-          git --version
-          git init -q /tmp/work && cd /tmp/work
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/samuel-gehealth/gh-bin-fetch.git"
-          git config user.name actions
-          git config user.email actions@github.com
-          echo "--- release info ---"
-          curl -s https://api.github.com/repos/cli/gh/releases/latest -o /tmp/release.json
-          head -c 400 /tmp/release.json; echo
-          tag=$(python3 -c "import json;print(json.load(open('/tmp/release.json'))['tag_name'])" 2>&1 || true)
-          echo "tag=$tag"
+          code=$(curl -s -o /tmp/probe.json -w '%{http_code}' -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues" -d '{"title":"fetch-gh-bin probe","body":"probe"}')
+          echo "probe_http=$code"; head -c 300 /tmp/probe.json; echo
+          [ "$code" = "201" ] || { echo "API WRITE BLOCKED"; exit 1; }
+          curl -sf -H "Accept: application/vnd.github+json" https://api.github.com/repos/cli/gh/releases/latest -o /tmp/release.json || { echo "RELEASE API FAIL"; exit 2; }
+          tag=$(python3 -c "import json;print(json.load(open('/tmp/release.json'))['tag_name'])")
           ver=${tag#v}
           url="https://github.com/cli/gh/releases/download/${tag}/gh_${ver}_linux_amd64.tar.gz"
-          echo "url=$url"
-          echo "--- download ---"
-          curl -sL -o /tmp/gh.tar.gz -w 'http=%{http_code}\n' "$url"
-          ls -l /tmp/gh.tar.gz
-          file /tmp/gh.tar.gz 2>/dev/null || true
-          echo "--- push to tools/gh-bin ---"
-          git checkout -q --orphan tools/gh-bin
-          cp /tmp/gh.tar.gz /tmp/work/gh.tar.gz
-          { echo "tag=$tag"; echo "url=$url"; } > /tmp/work/diag.txt
-          git add gh.tar.gz diag.txt
-          git commit -q -m "gh $tag"
-          git push origin tools/gh-bin --force 2>&1
-          echo "push exit=$?"
-          echo "=== end ==="
-          } 2>&1 | tee "$LOG"
-          echo "```"; cat "$LOG"; echo "```" >> "$GITHUB_STEP_SUMMARY"
-          echo "--- report to issue ---"
-          if curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues/1" | grep -q '"number"'; then
-            curl -s -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues/1" \
-              -d "$(python3 -c "import json;print(json.dumps({'body':open('/tmp/fetch.log').read()}))")" > /dev/null
-            echo "issue updated"
-          else
-            curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues" \
-              -d "$(python3 -c "import json;print(json.dumps({'title':'fetch-gh-bin diagnostics','body':open('/tmp/fetch.log').read()}))")" > /dev/null
-            echo "issue created"
-          fi
+          echo "tag=$tag url=$url"
+          code=$(curl -sL -o /tmp/gh.tar.gz -w '%{http_code}' "$url")
+          echo "download_http=$code"; ls -l /tmp/gh.tar.gz
+          [ "$code" = "200" ] || { echo "DOWNLOAD FAILED"; exit 3; }
+          python3 - <<'PY'
+          import json, os, sys, urllib.request, base64
+          tok = os.environ['GITHUB_TOKEN']
+          b64 = base64.b64encode(open('/tmp/gh.tar.gz','rb').read()).decode()
+          data = json.dumps({"message": "gh binary", "content": b64}).encode()
+          req = urllib.request.Request("https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/contents/gh.tar.gz?ref=main", data=data, method="PUT")
+          req.add_header("Authorization", "Bearer " + tok)
+          req.add_header("Accept", "application/vnd.github+json")
+          req.add_header("Content-Type", "application/json")
+          try:
+              r = urllib.request.urlopen(req)
+              print("upload:", r.status, r.read()[:300])
+          except urllib.error.HTTPError as e:
+              print("upload error:", e.code, e.read()[:500])
+              sys.exit(4)
+          PY
+          [ $? -eq 0 ] || exit 4
+          echo "DONE"
