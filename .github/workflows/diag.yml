@@ -1,0 +1,25 @@
+name: diag
+on:
+  workflow_dispatch:
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: channel-test
+        run: |
+          state="TOKEN_LEN=${#GITHUB_TOKEN} RUNNER=$(hostname) DATE=$(date -u)"
+          echo "$state"
+          git init -q /tmp/w; cd /tmp/w
+          git config user.email a@b.c; git config user.name a
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/samuel-gehealth/gh-bin-fetch.git"
+          echo "$state" > state.txt
+          git add state.txt; git commit -q -m s
+          if git push origin HEAD:tools/gh-diag --force 2>&1; then echo PUSH_OK; else echo PUSH_FAIL; fi
+          body="{\"title\":\"diag\",\"body\":\"$(echo "$state" | sed 's/"/\\"/g')\"}"
+          if curl -s -o /tmp/issue.json -w '%{http_code}' -X POST -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues" -d "$body"; then
+            cat /tmp/issue.json | head -c 200; echo
+          fi
+          curl -s -o /dev/null -w 'issues1_http=%{http_code}\n' -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/samuel-gehealth/gh-bin-fetch/issues"
